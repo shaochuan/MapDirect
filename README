@@ -1,0 +1,29 @@
+Shao-Chuan Wang
+Computer Science
+Columbia University
+
+sw2644 AT columbia DOT edu
+
+
+A System That Reads Columbia Campus Map For You.
+
+
+EXECUTION ENVIRONMENT
+=====================================
+The codes were tested under Mac OS X 10.5.8, but should be also
+working under Linux system.
+
+
+HOW TO INSTALL?
+=====================================
+You need python 2.5.1 (or newer version) and numpy 1.5.1 
+(or newer), scipy 0.7.0, matplotlib 1.0.1, python image 
+library 1.1.7 and OpenCV 2.1.
+
+Building by executing the script.
+  $ TBD
+
+HOW TO RUN?
+=====================================
+
+  $ python main.py
