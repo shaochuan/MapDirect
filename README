@@ -26,4 +26,8 @@ Building by executing the script.
 HOW TO RUN?
 =====================================
 
-  $ python main.py
+Print the instruction:
+  $ python main.py -h
+
+Typical Usage:
+  $ python main.py -map ass3-campus.pgm -label ass3-labeled.pgm -labeltext ass3-table.txt 
