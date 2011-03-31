@@ -21,7 +21,7 @@ You need python 2.5.1 (or newer version) and numpy 1.5.1
 library 1.1.7 and OpenCV 2.1.
 
 Building by executing the script.
-  $ TBD
+  $ ./pull_submodule.sh
 
 HOW TO RUN?
 =====================================
