@@ -73,6 +73,77 @@ def parse_label_text_map(filename):
 def ishole(cvseq):
     return cvseq[1][1] - cvseq[0][1] < 0
 
+
+def segment_vline(contour, v):
+    ''' return True if contour intersects with vertical line (x = v)
+    '''
+    for x0, y0 in list( contour ):
+        for x1, y1 in list( contour ):
+            if x0==x1:
+                continue
+            alpha = (float(v)-float(x1))/(float(x0)-float(x1))
+            if 0 <= alpha <= 1:
+                return True
+    return False
+
+def segment_hline(contour, h):
+    ''' return True if contour intersects with horizontal line (y = h)
+    '''
+    for x0, y0 in list( contour ):
+        for x1, y1 in list( contour ):
+            if y0==y1:
+                continue
+            alpha = (float(h)-float(y1))/(float(y0)-float(y1))
+            if 0 <= alpha <= 1:
+                return True
+    return False
+
+
+def ns_gen(_type):
+    """ generate a method for 'north' or 'south'
+        to reduce the code duplication.
+    """
+    def inner(self, building):
+        left, top, right, bottom = self.bbox
+        for x, y in list( building.contour ):
+            if _type == 'north':
+                if y >= self.center_of_mass[1]:
+                    return False
+            elif _type == 'south':
+                if y <= self.center_of_mass[1]:
+                    return False
+            else:
+                raise ValueError("No such direction value.")
+        if (left <= building.center_of_mass[0] <= right):
+            return True
+        if building.center_of_mass[0] < left:
+            return segment_vline(building.contour, left)
+        else:
+            return segment_vline(building.contour, right)
+    return inner
+def ew_gen(_type):
+    """ generate a method for 'east' or 'west'
+        to reduce the code duplication.
+    """
+    def inner(self, building):
+        left, top, right, bottom = self.bbox
+        for x, y in list( building.contour ):
+            if _type == 'east':
+                if x <= self.center_of_mass[0]:
+                    return False
+            elif _type == 'west':
+                if x >= self.center_of_mass[0]:
+                    return False
+            else:
+                raise ValueError("No such direction value.")
+        if (top <= building.center_of_mass[1] <= bottom):
+            return True
+        if building.center_of_mass[1] < top:
+            return segment_hline(building.contour, top)
+        else:
+            return segment_hline(building.contour, bottom)
+    return inner
+
 class Building(object):
     label_text_map = parse_label_text_map(get_label_text_filename())
     def __init__(self, bid, contour):
@@ -112,11 +183,16 @@ class Building(object):
         t_bound = Y - h
         r_bound = X + w
         b_bound = Y + h
-        for p in list( building.contour ):
-            x, y = p
+        for x, y in list( building.contour ):
             if l_bound <= x <= r_bound and t_bound <= y <= b_bound:
                 return True
         return False
+
+    is_north_me = ns_gen('north')
+    is_south_me = ns_gen('south')
+    is_east_me = ew_gen('east')
+    is_west_me = ew_gen('west')
+
 
 def contours_iterator(cvseq):
     if cvseq and not ishole(cvseq):
@@ -143,6 +219,14 @@ def init_buildings(buildingIDs, label_img):
                 continue
             if rb.is_near_me(sb):
                 rb.near_list.append(sb)
+            if rb.is_north_me(sb):
+                rb.north_list.append(sb)
+            if rb.is_south_me(sb):
+                rb.south_list.append(sb)
+            if rb.is_east_me(sb):
+                rb.east_list.append(sb)
+            if rb.is_west_me(sb):
+                rb.west_list.append(sb)
 
     return buildings
 
@@ -228,7 +312,7 @@ class WindowManager(object):
             self.refresh()
             bd = draw_clicked()
             if bd:
-                for n in bd.near_list:
+                for n in bd.east_list:
                     cv.DrawContours(self.show_img, n.contour, im.color.red, im.color.green, 0, thickness=2)
             #bs = self.sort_buildings(x,y)
             #print bs[0]
