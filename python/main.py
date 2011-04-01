@@ -10,6 +10,8 @@ import cv
 import im
 import math
 import numpy
+import cPickle
+import networkx as nx
 
 class ImageWriter(object):
     def __init__(self, output_folder='.'):
@@ -156,11 +158,11 @@ class Building(object):
         self.center_of_mass = im.center_of_mass(contour)
         l,t,w,h = cv.BoundingRect(contour)
         self.bbox = (l,t,l+w,t+h)
-        self.near_list = []
-        self.north_list = []
-        self.south_list = []
-        self.east_list = []
-        self.west_list = []
+        self.near_set = set([])
+        self.north_set = set([])
+        self.south_set = set([])
+        self.east_set = set([])
+        self.west_set = set([])
 
     def __eq__(self, building):
         return self.bid == building.bid
@@ -169,6 +171,8 @@ class Building(object):
         return "<Building: %s @ %g, %g>" % (self.name,
                         self.center_of_mass[0],
                         self.center_of_mass[1])
+    def __hash__(self):
+        return self.bid
 
     def __sub__(self, building):
         X, Y = self.center_of_mass
@@ -218,17 +222,39 @@ def init_buildings(buildingIDs, label_img):
             if sb.bid == rb.bid:
                 continue
             if rb.is_near_me(sb):
-                rb.near_list.append(sb)
+                rb.near_set.add(sb)
             if rb.is_north_me(sb):
-                rb.north_list.append(sb)
+                rb.north_set.add(sb)
             if rb.is_south_me(sb):
-                rb.south_list.append(sb)
+                rb.south_set.add(sb)
             if rb.is_east_me(sb):
-                rb.east_list.append(sb)
+                rb.east_set.add(sb)
             if rb.is_west_me(sb):
-                rb.west_list.append(sb)
+                rb.west_set.add(sb)
 
     return buildings
+
+
+def prune(buildings, direction):
+    if not direction in ('north', 'south', 'east', 'west'):
+        raise ValueError('%s No such direction value' % (direction,))
+    sa = '%s_set' % (direction,)
+
+    G = nx.DiGraph()
+    buildings.sort(cmp=lambda a,b:cmp(len(getattr(a, sa)),
+            len(getattr(b, sa))),reverse=True)
+    for bd in buildings:
+        lst = list(getattr(bd, sa))
+        lst.sort(cmp=lambda a,b:cmp(len(getattr(a, sa)), # bestfit
+            len(getattr(b, sa))),reverse=True)
+        for n in lst:
+            if len(getattr(n, sa)) and \
+                    getattr(n, sa).issubset(getattr(bd, sa)):
+                print n.name
+                bd.north_set = bd.north_set - n.north_set
+                setattr(bd, sa, getattr(bd, sa) - getattr(n, sa))
+                G.add_edge(bd.bid, n.bid)
+    return G
 
 import pdb
 class WindowManager(object):
@@ -251,6 +277,18 @@ class WindowManager(object):
                     numpy.asarray(cv.GetMat(self.label_img))) if x > 0]
         self.buildings = init_buildings(self.buildingIDs, self.label_img)
         self.id_building_dict = dict(zip(self.buildingIDs, self.buildings))
+        self.north_graph = prune(self.buildings, 'north')
+        self.south_graph = prune(self.buildings, 'south')
+        self.east_graph = prune(self.buildings, 'east')
+        self.west_graph = prune(self.buildings, 'west')
+        self.dump_graphs()
+
+    def dump_graphs(self):
+        for d in ('north', 'south', 'east', 'west'):
+            fn = '%s_graph.g' % (d,)
+            fout = open(fn, 'wb')
+            cPickle.dump(getattr(self, '%s_graph' % (d,)), fout)
+            fout.close()
 
     def refresh(self):
         self.show_img = cv.CreateImage((self.map_img.width*2,
@@ -312,10 +350,8 @@ class WindowManager(object):
             self.refresh()
             bd = draw_clicked()
             if bd:
-                for n in bd.east_list:
+                for n in bd.north_set:
                     cv.DrawContours(self.show_img, n.contour, im.color.red, im.color.green, 0, thickness=2)
-            #bs = self.sort_buildings(x,y)
-            #print bs[0]
 
             return True
         return False
