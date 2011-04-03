@@ -17,8 +17,7 @@ working under Linux system.
 HOW TO INSTALL?
 =====================================
 You need python 2.5.1 (or newer version) and numpy 1.5.1 
-(or newer), scipy 0.7.0, matplotlib 1.0.1, python image 
-library 1.1.7 and OpenCV 2.1.
+(or newer), networkx 1.2, matplotlib 1.0.1, and OpenCV 2.1.
 
 Building by executing the script.
   $ ./pull_submodule.sh
