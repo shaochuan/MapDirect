@@ -106,51 +106,69 @@ def ns_gen(_type):
     """ generate a method for 'north' or 'south'
         to reduce the code duplication.
     """
-    def inner(self, building):
+    def inner(self, building_or_xy):
         left, top, right, bottom = self.bbox
-        for x, y in list( building.contour ):
-            if _type == 'north':
-                if y >= self.center_of_mass[1]:
-                    return False
-            elif _type == 'south':
-                if y <= self.center_of_mass[1]:
-                    return False
-            else:
-                raise ValueError("No such direction value.")
-        if (left <= building.center_of_mass[0] <= right):
-            return True
-        if building.center_of_mass[0] < left:
-            return segment_vline(building.contour, left)
+        if isinstance(building_or_xy, tuple):
+            x, y = building_or_xy
+            expr = {'north': y < top,
+                    'south': y > bottom}[_type]
+            if left <= x <= right and expr:
+                return True
+            return False
         else:
-            return segment_vline(building.contour, right)
+            building = building_or_xy
+            for x, y in list( building.contour ):
+                if _type == 'north':
+                    if y >= self.center_of_mass[1]:
+                        return False
+                elif _type == 'south':
+                    if y <= self.center_of_mass[1]:
+                        return False
+                else:
+                    raise ValueError("No such direction value.")
+            if (left <= building.center_of_mass[0] <= right):
+                return True
+            if building.center_of_mass[0] < left:
+                return segment_vline(building.contour, left)
+            else:
+                return segment_vline(building.contour, right)
     return inner
 def ew_gen(_type):
     """ generate a method for 'east' or 'west'
         to reduce the code duplication.
     """
-    def inner(self, building):
+    def inner(self, building_or_xy):
         left, top, right, bottom = self.bbox
-        for x, y in list( building.contour ):
-            if _type == 'east':
-                if x <= self.center_of_mass[0]:
-                    return False
-            elif _type == 'west':
-                if x >= self.center_of_mass[0]:
-                    return False
-            else:
-                raise ValueError("No such direction value.")
-        if (top <= building.center_of_mass[1] <= bottom):
-            return True
-        if building.center_of_mass[1] < top:
-            return segment_hline(building.contour, top)
+        if isinstance(building_or_xy, tuple):
+            x, y = building_or_xy
+            expr = {'east': x > right,
+                    'west': x < left}[_type]
+            if top <= y <= bottom and expr:
+                return True
+            return False
         else:
-            return segment_hline(building.contour, bottom)
+            building = building_or_xy
+            for x, y in list( building.contour ):
+                if _type == 'east':
+                    if x <= self.center_of_mass[0]:
+                        return False
+                elif _type == 'west':
+                    if x >= self.center_of_mass[0]:
+                        return False
+                else:
+                    raise ValueError("No such direction value.")
+            if (top <= building.center_of_mass[1] <= bottom):
+                return True
+            if building.center_of_mass[1] < top:
+                return segment_hline(building.contour, top)
+            else:
+                return segment_hline(building.contour, bottom)
     return inner
 
 class Building(object):
     label_text_map = parse_label_text_map(get_label_text_filename())
     def __init__(self, bid, contour):
-        self.bid = bid
+        self.bid = int(bid)
         self.name = self.label_text_map[bid]
         while (ishole(contour)):
             contour = contour.h_next()
@@ -310,6 +328,34 @@ class BuildingManager(object):
         self.east_graph = prune(self.buildings, 'east')
         self.west_graph = prune(self.buildings, 'west')
         self.dump_graphs()
+        self.empty_img = self.init_empty_img()
+
+    def init_empty_img(self):
+        # calculate Union{ near_regions } for all building
+        nearby_region_polys = [bd.near_region_poly for bd in self.buildings]
+        all_near_regions =cv.CreateImage((self.label_img.width,
+                     self.label_img.height),
+                     cv.IPL_DEPTH_8U,1)
+        cv.FillPoly(all_near_regions, [nearby_region_polys[0]], im.color.blue)
+        for poly in nearby_region_polys:
+            tmp_canvas = cv.CreateImage((self.label_img.width,
+                     self.label_img.height),
+                     cv.IPL_DEPTH_8U,1)
+            cv.FillPoly(tmp_canvas, [poly], im.color.blue)
+            cv.Or(tmp_canvas, all_near_regions, all_near_regions)
+
+        # find the "empty" region
+        empty_region = cv.CreateImage((self.label_img.width,
+                     self.label_img.height),
+                     cv.IPL_DEPTH_8U,1)
+        cv.CmpS(all_near_regions, 0, empty_region, cv.CV_CMP_EQ)
+
+        for ele in it.nonzero_indices(cv.GetMat(empty_region)):
+            y,x = ele
+            y,x = int(y),int(x)
+            nearest_bd = self.get_nearest_building(x, y)
+            cv.Set2D(empty_region, y, x, nearest_bd.bid)
+        return empty_region
 
     def dump_graphs(self):
         for d in ('north', 'south', 'east', 'west'):
@@ -318,22 +364,73 @@ class BuildingManager(object):
             cPickle.dump(getattr(self, '%s_graph' % (d,)), fout)
             fout.close()
 
+    def get_equivalent_region_via_nearest(self, bld):
+        equ_class_region = cv.CreateImage((self.label_img.width, self.label_img.height),
+                          cv.IPL_DEPTH_8U, 1)
+        bid = bld.bid
+        cv.CmpS(self.empty_img, bid, equ_class_region, cv.CV_CMP_EQ)
+        return equ_class_region
+
+    def get_near_region_mask(self, blds):
+        regions = [bd.near_region_poly for bd in blds]
+        c = cg.rects_intersection(regions, self.label_img.width,
+                self.label_img.height)
+        # subtract buildings
+        equ_class_region = cv.CreateImage((self.label_img.width,
+                 self.label_img.height),
+                 cv.IPL_DEPTH_8U,1)
+        canvas = cv.CloneImage(self.label_img)
+        cv.FillPoly(equ_class_region, [c], im.color.blue)
+        cv.CmpS(canvas, 0, canvas, cv.CV_CMP_EQ)
+        cv.And(equ_class_region, canvas, equ_class_region)
+
+        # subtract near of near's neighbor
+        near_of_near = set(self.buildings)
+        for bd in blds:
+            near_of_near = near_of_near.union( bd.near_set )
+        near_of_near.difference_update( set(blds) )
+        near_regions = [bd.near_region_poly for bd in near_of_near]
+        for reg, bd in zip(near_regions, near_of_near):
+            if cg.has_intersection(equ_class_region, reg,
+                    self.label_img.width, self.label_img.height):
+                cg.sub_intersection(equ_class_region, reg,
+                    self.label_img.width, self.label_img.height)
+        # equ_class_region -= near of near via nearest
+        for bd in near_of_near:
+            eq_region = self.get_equivalent_region_via_nearest(bd)
+            c = im.find_contour(eq_region)
+            while c:
+                if cg.has_intersection(equ_class_region, list(c),
+                        self.label_img.width, self.label_img.height):
+                    cg.sub_intersection(equ_class_region, list(c),
+                            self.label_img.width, self.label_img.height)
+                c = c.h_next()
+
+        return equ_class_region
+
+    def get_building_by_id(self, bid):
+        return self.id_building_dict[bid]
+
     def is_within_building(self, x, y):
         return any( cv.Get2D(self.label_img, y, x) )
 
     def get_nearest_building(self, x, y):
+        nearests = self.get_nearest_buildings(x, y)
+        return nearests[0]
+
+    def get_nearest_buildings(self, x, y, k=3):
         def app_dist((X1,Y1), bld):
             X2,Y2=bld.center_of_mass
             return (X1-X2)*(X1-X2)+(Y1-Y2)*(Y1-Y2)
         dist_blds = [(app_dist((x,y), bld), bld) for bld in self.buildings]
         dist_blds.sort()
-        dist_blds = dist_blds[:3]
+        dist_blds = dist_blds[:k+3]
         blds = [d[1] for d in dist_blds]
         lst = []
         for bd in blds:
             lst.append( (bd.nearest_dist(x,y), bd))
         lst.sort()
-        return lst[0][1]
+        return [bd[1] for bd in lst][:k]
 
     def get_near_buildings(self, x, y):
         return [bd for bd in self.buildings if bd.is_near_me((x,y))]
@@ -404,50 +501,44 @@ class WindowManager(object):
 
     def handle_clicked_building(self, x, y):
         building = self.buildingMgr.get_clicked_building(x, y)
-        for bd in building.near_set:
+        for bd in building.north_set:
             cv.DrawContours(self.show_img, bd.contour,
                             im.color.red, im.color.green, 0, thickness=2)
         self.buildingMgr.draw_selected(self.show_img, x, y)
 
     def handle_clicked_nonbuilding(self, x, y):
+        def equivalent_region_nearest(nearest_building):
+            ''' find the equivalent class region via nearest building
+            '''
+            equ_class_region = cv.CreateImage((self.map_img.width, self.map_img.height),
+                          cv.IPL_DEPTH_8U, 1)
+            bid = nearest_building.bid
+            cv.CmpS(self.buildingMgr.empty_img, bid, equ_class_region, cv.CV_CMP_EQ)
+            return equ_class_region
+        def draw_region(equ_class_region, color=im.color.red):
+            c = im.find_contour(equ_class_region)
+            while c:
+                cv.FillPoly(self.show_img, [list(c)], color)
+                c = c.h_next()
+
         blds = self.buildingMgr.get_near_buildings(x,y)
         if blds:
-            regions = [bd.near_region_poly for bd in blds]
-            c = cg.rects_intersection(regions, self.map_img.width,
-                    self.map_img.height)
-            # subtract buildings
-            equ_class_region = cv.CreateImage((self.map_img.width,
-                     self.map_img.height),
-                     cv.IPL_DEPTH_8U,1)
-            canvas = cv.CloneImage(self.map_img)
-            cv.FillPoly(equ_class_region, [c], im.color.blue)
-            cv.CmpS(canvas, 0, canvas, cv.CV_CMP_EQ)
-            cv.And(equ_class_region, canvas, equ_class_region)
+            equ_class_region = self.buildingMgr.get_near_region_mask(blds)
+            if len(blds)==1:
+                cv.Or(equ_class_region, equivalent_region_nearest(blds[0]),
+                    equ_class_region)
 
-            # subtract near of near's neighbor
-            near_of_near = set(self.buildingMgr.buildings)
-            for bd in blds:
-                near_of_near = near_of_near.union( bd.near_set )
-            near_of_near.difference_update( set(blds) )
-            near_regions = [bd.near_region_poly for bd in near_of_near]
-            for reg, bd in zip(near_regions, near_of_near):
-                if cg.has_intersection(equ_class_region, reg,
-                        self.map_img.width, self.map_img.height):
-                    cg.sub_intersection(equ_class_region, reg,
-                        self.map_img.width, self.map_img.height)
-
-            # draw equivalent class region. this draw is trickier
-            b,g,r = im.split3(im.clone(self.map_img, 'gray2bgr'))
-            self.show_img = im.clone(self.map_img, 'gray2bgr')
-            cv.Or(r, equ_class_region, r)
-            cv.Merge(b,g,r,None,self.show_img)
-
+            draw_region(equ_class_region)
             # fill nearby buildings
             for bd in blds:
                 bd.fillme(self.show_img, im.color.green)
         else: # if there is no nearby buildings
-            nearest_bd = self.buildingMgr.get_nearest_building(x, y)
-            nearest_bd.fillme(self.show_img, im.color.green)
+            nearest_building = self.buildingMgr.get_nearest_building(x, y)
+            equ_class_region = self.buildingMgr.get_near_region_mask([nearest_building])
+            cv.Or(equ_class_region, equivalent_region_nearest(nearest_building),
+                    equ_class_region)
+            draw_region(equ_class_region)
+            nearest_building.fillme(self.show_img, im.color.green)
 
         im.drawtext(self.show_img, "(%g, %g, 0)" % (x,y), 
                 x+10, y+10,
