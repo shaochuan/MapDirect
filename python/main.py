@@ -8,6 +8,7 @@ import os
 import sys
 import cv
 import im
+import it
 import cg
 import math
 import numpy
@@ -467,8 +468,6 @@ class BuildingManager(object):
                     font=im.font.small,
                     color=im.color.darkgreen)
 
-import it
-import pdb
 class WindowManager(object):
     msdelay = 3
     def __init__(self, win_name):
