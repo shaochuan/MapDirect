@@ -468,6 +468,8 @@ class BuildingManager(object):
                     font=im.font.small,
                     color=im.color.darkgreen)
 
+import pdb
+
 class WindowManager(object):
     msdelay = 3
     def __init__(self, win_name):
@@ -485,10 +487,14 @@ class WindowManager(object):
         self.font = im.font.small
         self.fontcolor = im.color.darkgreen
 
+        self.click_state = 'START' # 'FROM_CLICKED', 'TO_CLICKED'
+        self.last_state = 'START'
+        self.last_clicked = set([])
+
         self.buildingMgr = BuildingManager(self.label_img)
 
     def refresh(self):
-        self.show_img = cv.CreateImage((self.map_img.width*2,
+        self.show_img = cv.CreateImage((int(self.map_img.width*2.8),
                 self.map_img.height), cv.IPL_DEPTH_8U, 3)
         im.paste(im.clone(self.map_img, "gray2bgr"), self.show_img, 0, 0)
 
@@ -500,10 +506,53 @@ class WindowManager(object):
 
     def handle_clicked_building(self, x, y):
         building = self.buildingMgr.get_clicked_building(x, y)
-        for bd in building.north_set:
+        for bd in building.near_set:
             cv.DrawContours(self.show_img, bd.contour,
                             im.color.red, im.color.green, 0, thickness=2)
         self.buildingMgr.draw_selected(self.show_img, x, y)
+
+    def generate_position_desc(self, blds):
+        def draw_text(text, y, color=im.color.yellow):
+            im.drawtext(self.show_img, text, self.map_img.width+30, y,
+                    font=im.font.small,
+                    color=color)
+        if not blds:
+            raise ValueError("blds cannot be null.")
+            return
+        if self.click_state == 'TO_CLICKED':
+            anchor = 30 + self.map_img.height/2
+            draw_text("To:", anchor, im.color.red)
+            anchor += 30
+        else:
+            anchor = 30
+            draw_text("From:", anchor, im.color.red)
+            anchor += 30
+
+        if len(blds) == 1:
+            ref_bld = blds[0]
+            text = 'Near %s' % (ref_bld.name, )
+            draw_text(text, anchor)
+            anchor += 30
+            for direction in ('east', 'west', 'north', 'south'):
+                graph = getattr(self.buildingMgr, '%s_graph' % (direction, ))
+                if not graph.has_node(ref_bld.bid):
+                    continue
+                for edge in graph.in_edges(ref_bld.bid):
+                    node = edge[0]
+                    b = self.buildingMgr.get_building_by_id(node)
+                    text = '%s of %s ' % (direction.capitalize(), b.name)
+                    print text
+                    draw_text(text, anchor)
+                    anchor += 30
+        else:
+            s = 'Between '
+            draw_text(s, anchor)
+            anchor += 30
+            for bd in blds[:-1]:
+                draw_text('%s, ' % (bd.name,), anchor)
+                anchor += 30
+            draw_text('and %s' % (blds[-1].name,), anchor)
+
 
     def handle_clicked_nonbuilding(self, x, y):
         def equivalent_region_nearest(nearest_building):
@@ -521,35 +570,46 @@ class WindowManager(object):
                 c = c.h_next()
 
         blds = self.buildingMgr.get_near_buildings(x,y)
-        if blds:
-            equ_class_region = self.buildingMgr.get_near_region_mask(blds)
-            if len(blds)==1:
-                cv.Or(equ_class_region, equivalent_region_nearest(blds[0]),
-                    equ_class_region)
+        if not blds:
+            blds = [self.buildingMgr.get_nearest_building(x, y)]
+        # update clicked states
+        if self.click_state == 'START':
+            self.click_state = 'FROM_CLICKED'
+        elif self.click_state == 'FROM_CLICKED':
+            if self.last_clicked != set(blds):
+                self.click_state = 'TO_CLICKED'
+        else: # click_state == 'TO_CLICKED'
+            self.click_state = 'FROM_CLICKED'
 
-            draw_region(equ_class_region)
-            # fill nearby buildings
-            for bd in blds:
-                bd.fillme(self.show_img, im.color.green)
-        else: # if there is no nearby buildings
-            nearest_building = self.buildingMgr.get_nearest_building(x, y)
-            equ_class_region = self.buildingMgr.get_near_region_mask([nearest_building])
-            cv.Or(equ_class_region, equivalent_region_nearest(nearest_building),
-                    equ_class_region)
-            draw_region(equ_class_region)
-            nearest_building.fillme(self.show_img, im.color.green)
+        reg_color = {'FROM_CLICKED' : im.color.red,
+                     'TO_CLICKED'   : im.color.blue}[self.click_state]
+        fill_bld_color = {'FROM_CLICKED' :im.color.pink,
+                          'TO_CLICKED':im.color.lightblue}[self.click_state]
+
+        # equivalent class region 
+        equ_class_region = self.buildingMgr.get_near_region_mask(blds)
+        if len(blds)==1:
+            cv.Or(equ_class_region, equivalent_region_nearest(blds[0]),
+                equ_class_region)
+        draw_region(equ_class_region, color=reg_color)
+        # fill nearby buildings
+        for bd in blds:
+            bd.fillme(self.show_img, fill_bld_color)
+        self.generate_position_desc(blds)
 
         im.drawtext(self.show_img, "(%g, %g, 0)" % (x,y), 
                 x+10, y+10,
                 font=self.font,
                 color=self.fontcolor)
+        self.last_clicked = set(blds)
+
 
     def handle_mouse(self, event, x, y, flag, param):
         """ Return True if this function handle the event
                    False otherwise.
         """
         def screen_shot():
-            cv.SetImageROI(self.show_img, (0,0,self.map_img.width,self.map_img.height))
+            #cv.SetImageROI(self.show_img, (0,0,self.map_img.width,self.map_img.height))
             i = 1
             while os.path.exists("%d.png" % (i,)):
                 i += 1
@@ -558,11 +618,14 @@ class WindowManager(object):
         is_click = (flag == cv.CV_EVENT_FLAG_LBUTTON and \
                 event == cv.CV_EVENT_LBUTTONUP)
         if is_click:
-            self.refresh()
+            if self.click_state != 'FROM_CLICKED':
+                self.refresh()
             if self.buildingMgr.is_within_building(x, y):
                 self.handle_clicked_building(x, y)
             else:
                 self.handle_clicked_nonbuilding(x, y)
+            if self.click_state == 'TO_CLICKED':
+                screen_shot()
 
             # mark the clicked position.
             cv.Circle(self.show_img, (x,y), 2, im.color.green)
