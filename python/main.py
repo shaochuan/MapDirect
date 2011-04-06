@@ -13,6 +13,7 @@ import cg
 import math
 import numpy
 import cPickle
+import itertools
 import networkx as nx
 
 class ImageWriter(object):
@@ -178,6 +179,8 @@ class Building(object):
         self.center_of_mass = im.center_of_mass(contour)
         l,t,w,h = cv.BoundingRect(contour)
         self.bbox = (l,t,l+w,t+h)
+        self.width = w
+        self.height = h
         self.near_set = set([])
         self.north_set = set([])
         self.south_set = set([])
@@ -351,12 +354,31 @@ class BuildingManager(object):
                      cv.IPL_DEPTH_8U,1)
         cv.CmpS(all_near_regions, 0, empty_region, cv.CV_CMP_EQ)
 
+
         for ele in it.nonzero_indices(cv.GetMat(empty_region)):
             y,x = ele
             y,x = int(y),int(x)
             nearest_bd = self.get_nearest_building(x, y)
             cv.Set2D(empty_region, y, x, nearest_bd.bid)
         return empty_region
+
+    def iter(self, bid, direction='north'):
+        ''' Directional tree iterator.
+            The returned iterator will traverse the dependency tree 
+            and iterate all 'norths' of a building, for example.
+        '''
+        graph = getattr(self, '%s_graph' % (direction,))
+        if graph.has_node(bid):
+            for edge in graph.out_edges(bid):
+                assert edge[0] == bid
+                child_bid = edge[1]
+                child_iter = self.iter(child_bid, direction)
+                for b in child_iter:
+                    yield b
+        bd = self.id_building_dict[bid]
+        dir_set = getattr(bd, '%s_set' % (direction, ))
+        for b in dir_set:
+            yield b
 
     def dump_graphs(self):
         for d in ('north', 'south', 'east', 'west'):
@@ -433,8 +455,11 @@ class BuildingManager(object):
         lst.sort()
         return [bd[1] for bd in lst][:k]
 
-    def get_near_buildings(self, x, y):
-        return [bd for bd in self.buildings if bd.is_near_me((x,y))]
+    def get_near_buildings(self, x, y, exclude=None):
+        candiates = set(self.buildings)
+        if exclude:
+            candiates.difference_update(set([exclude]))
+        return [bd for bd in candiates if bd.is_near_me((x,y))]
 
     def get_clicked_building(self, x, y):
         encode_int = cv.Get2D(self.label_img, y, x)[0]
@@ -468,6 +493,74 @@ class BuildingManager(object):
                     font=im.font.small,
                     color=im.color.darkgreen)
 
+class PathGenerator(object):
+    def __init__(self, buildingMgr):
+        self.buildingMgr = buildingMgr
+
+    def initial_direction(self, from_, to_):
+        fx, fy = from_
+        tx, ty = to_
+        fx, fy = float(fx), float(fy)
+        tx, ty = float(tx), float(ty)
+        print from_, to_
+        if tx-fx == 0.0:
+            if ty-fy < 0:
+                return 'north'
+            else:
+                return 'south'
+        slope = (ty-fy)/(tx-fx)
+        dist = math.sqrt((tx-fx)*(tx-fx)+(ty-fy)*(ty-fy))
+        unit_vec = ((tx-fx)/dist, (ty-fy)/dist)
+        dot_proc = [(-unit_vec[1], 'north'),
+                    (unit_vec[0], 'east'),
+                    (unit_vec[1], 'south'),
+                    (-unit_vec[0], 'west')]
+        dot_proc.sort()
+        return dot_proc[-1][1]
+
+    def go_get_building(self, start, start_bd, direction):
+        incr = {'north': -1,
+                'south': +1,
+                'east':  +1,
+                'west':  -1,}[direction]
+        x, y = start
+        if direction in ('north', 'south'):
+            while not self.buildingMgr.get_near_buildings(x, y,
+                    exclude=start_bd):
+                y += incr
+        else:
+            while not self.buildingMgr.get_near_buildings(x, y,
+                    exclude=start_bd):
+                x += incr
+        bd = self.buildingMgr.get_near_buildings(x, y, exclude=start_bd)[0]
+
+        if direction in ('north', 'south'):
+            return (bd, (x,y+incr*bd.height))
+        else:
+            return (bd, (x+incr*bd.width, y))
+
+
+    def path_from_to(self, from_, to_):
+        from_bld = self.buildingMgr.get_nearest_building(*from_)
+        to_bld = self.buildingMgr.get_nearest_building(*to_)
+
+        # the target region
+        # the center of mass of the target region (as a guide)
+        # get target reference buildings
+        
+
+        init_dir = self.initial_direction(from_, to_)
+        from_bld, next_p = self.go_get_building(from_, from_bld, init_dir)
+        print from_bld, next_p
+        while from_bld != to_bld:
+            next_dir = self.initial_direction(next_p, to_)
+            from_bld, next_p = self.go_get_building(next_p, from_bld, next_dir)
+            print from_bld, next_p
+
+
+    def find_path_relations(self, from_bld, to_bld):
+        pass
+
 import pdb
 
 class WindowManager(object):
@@ -490,8 +583,10 @@ class WindowManager(object):
         self.click_state = 'START' # 'FROM_CLICKED', 'TO_CLICKED'
         self.last_state = 'START'
         self.last_clicked = set([])
+        self.last_clickedxy = (0,0)
 
         self.buildingMgr = BuildingManager(self.label_img)
+        self.pathGen = PathGenerator(self.buildingMgr)
 
     def refresh(self):
         self.show_img = cv.CreateImage((int(self.map_img.width*2.8),
@@ -506,7 +601,7 @@ class WindowManager(object):
 
     def handle_clicked_building(self, x, y):
         building = self.buildingMgr.get_clicked_building(x, y)
-        for bd in building.near_set:
+        for bd in self.buildingMgr.iter(building.bid, 'north'):
             cv.DrawContours(self.show_img, bd.contour,
                             im.color.red, im.color.green, 0, thickness=2)
         self.buildingMgr.draw_selected(self.show_img, x, y)
@@ -625,7 +720,9 @@ class WindowManager(object):
             else:
                 self.handle_clicked_nonbuilding(x, y)
             if self.click_state == 'TO_CLICKED':
+                self.pathGen.path_from_to(self.last_clickedxy, (x,y))
                 screen_shot()
+            self.last_clickedxy = (x,y)
 
             # mark the clicked position.
             cv.Circle(self.show_img, (x,y), 2, im.color.green)
